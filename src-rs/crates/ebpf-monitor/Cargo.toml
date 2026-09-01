@@ -1,0 +1,17 @@
+[package]
+name = "ebpf-monitor"
+version = "0.0.1"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+aya = "0.14"
+libc = "0.2"
+anyhow = "1"
+toml = "0.9"
+thiserror = "2"
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+plain = "0.2"

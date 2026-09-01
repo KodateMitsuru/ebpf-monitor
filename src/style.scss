@@ -1,0 +1,14 @@
+// 全局样式（SCSS）—— 字体栈与 example App.vue 一致
+html, body { margin: 0; padding: 0; height: 100%; }
+
+body {
+  font-family: 'MiSans VF', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+    Ubuntu, Cantarell, sans-serif;
+  background: var(--m-color-background);
+  color: var(--m-color-on-background);
+  -webkit-font-smoothing: antialiased;
+}
+
+#app { max-width: 640px; margin: 0 auto; }
+
+.mono { font-family: ui-monospace, Menlo, monospace; }

@@ -1,0 +1,6 @@
+# aarch64 发布目标：纯 rust 工具链（rust-lld），无需任何 C 交叉工具链
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+
+[alias]
+xtask = "run --package xtask --"

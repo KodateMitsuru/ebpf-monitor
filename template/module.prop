@@ -1,0 +1,7 @@
+id=ebpf-monitor
+name=eBPF File Monitor
+version=v${VERSION}
+versionCode=${VERSION_CODE}
+author=KodateMitsuru
+description=Kernel raw-tracepoint file access monitor with WebUI
+homepage=https://github.com/KodateMitsuru/ebpf-monitor

@@ -1,0 +1,12 @@
+[package]
+name = "monitor-bpf"
+version = "0.0.1"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "monitor-bpf"
+path = "src/main.rs"
+
+[dependencies]
+aya-ebpf = "0.2"

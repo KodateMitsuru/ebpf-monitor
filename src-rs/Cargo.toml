@@ -1,0 +1,15 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+# shared with the BPF build: the kernel side needs panic=abort and no overflow panics
+[profile.dev]
+panic = "abort"
+overflow-checks = false
+
+[profile.release]
+panic = "abort"
+# lto off: breaks linking of BPF map definitions.
+# opt-level=3: forces fixed-size memset/memcpy to inline (calls are banned in BPF)
+opt-level = 3
+codegen-units = 16

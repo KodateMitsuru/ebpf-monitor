@@ -1,0 +1,4 @@
+# KSU root domain: eBPF program load, map operations and BTF access
+allow ksu ksu capability { sys_admin perfmon bpf }
+allow ksu kernel bpf { map_create map_read map_write prog_load prog_run }
+allow ksu sysfs file { open read getattr }

@@ -1,0 +1,7 @@
+# frontend deps
+node_modules/
+# build outputs
+/dist/
+/src-rs/target/
+*.log
+/target/
