@@ -1,15 +1,40 @@
 [workspace]
-members = ["crates/*"]
 resolver = "2"
+members = [
+    "ebpf-monitor",
+    "ebpf-monitor-common",
+    "ebpf-monitor-ebpf",
+]
+default-members = ["ebpf-monitor", "ebpf-monitor-common"]
 
-# shared with the BPF build: the kernel side needs panic=abort and no overflow panics
-[profile.dev]
-panic = "abort"
-overflow-checks = false
+[workspace.package]
+license = "GPL-3.0-or-later"
+edition = "2024"
 
-[profile.release]
-panic = "abort"
-# lto off: breaks linking of BPF map definitions.
-# opt-level=3: forces fixed-size memset/memcpy to inline (calls are banned in BPF)
-opt-level = 3
-codegen-units = 16
+[workspace.dependencies]
+aya = { version = "0.14.0", default-features = false }
+aya-build = { version = "0.2.0", default-features = false }
+aya-ebpf = { version = "0.2.1", default-features = false }
+aya-log = { version = "0.3.0", default-features = false }
+aya-log-ebpf = { version = "0.2.0", default-features = false }
+
+anyhow = { version = "1", default-features = false }
+cargo_metadata = { version = "0.23.0", default-features = false }
+clap = { version = "4.5.20", default-features = false, features = ["std"] }
+env_logger = { version = "0.11.5", default-features = false }
+libc = { version = "0.2.159", default-features = false }
+log = { version = "0.4.22", default-features = false }
+tokio = { version = "1.40.0", default-features = false }
+which = { version = "6.0.0", default-features = false }
+plain = { version = "0.2", default-features = false }
+toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
+thiserror = { version = "2", default-features = false }
+parking_lot = { version = "0.12", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[profile.release.package.ebpf-monitor-ebpf]
+debug = 2
+codegen-units = 1
+strip = false

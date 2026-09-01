@@ -14,9 +14,8 @@ const rs = join(root, 'src-rs');
 const node = (f) => execFileSync(process.execPath, [join(root, 'scripts', f)], { cwd: root, stdio: 'inherit' });
 
 node('daemon.mjs');
-console.log('==> frontend: pnpm run build (typecheck + vite -> dist/webroot)');
-execFileSync('pnpm', ['run', 'build'], { cwd: root, stdio: 'inherit' });
-
+console.log('==> frontend: pnpm run build:web (typecheck + vite -> dist/webroot)');
+execFileSync('pnpm', ['run', 'build:web'], { cwd: root, stdio: 'inherit' });
 const bin = join(rs, 'target/aarch64-unknown-linux-musl/release/ebpf-monitor');
 const tpl = join(root, 'template');
 const webroot = join(root, 'dist/webroot');

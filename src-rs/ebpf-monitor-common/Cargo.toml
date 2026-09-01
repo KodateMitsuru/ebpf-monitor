@@ -1,0 +1,17 @@
+[package]
+name = "ebpf-monitor-common"
+version = "0.1.0"
+edition.workspace = true
+
+license.workspace = true
+
+[features]
+default = []
+user = ["aya", "plain"]
+
+[dependencies]
+aya = { workspace = true, optional = true }
+plain = { workspace = true, optional = true }
+
+[lib]
+path = "src/lib.rs"

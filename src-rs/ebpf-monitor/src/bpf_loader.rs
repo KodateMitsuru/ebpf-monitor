@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-use aya::maps::{HashMap as AyaHashMap, MapData, RingBuf};
+use aya::maps::{Array as AyaArray, HashMap as AyaHashMap, MapData, RingBuf};
 use aya::Ebpf;
 use aya::Pod;
 
+use crate::btf::KernelLayout;
 use crate::config::{Config, ValidatedConfig};
-use crate::types::{SyscallArgInfo, WATCH_BASE_MAX};
+use ebpf_monitor_common::{SyscallArgInfo, WATCH_BASE_MAX};
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -34,6 +35,7 @@ pub struct Maps {
     pub pid_wl: AyaHashMap<MapData, u32, u8>,
     pub uid_wl: AyaHashMap<MapData, u32, u8>,
     pub events: RingBuf<MapData>,
+    pub config: AyaArray<MapData, u64>,
 }
 
 fn take_hash<K, V>(bpf: &mut Ebpf, name: &str) -> Result<AyaHashMap<MapData, K, V>, String>
@@ -45,6 +47,21 @@ where
         .take_map(name)
         .ok_or_else(|| format!("map '{name}' not found"))?;
     AyaHashMap::try_from(map).map_err(|e| format!("'{name}': {e}"))
+}
+/// Inject the resolved kernel layout before the maps are put in service.
+pub fn apply_kernel_layout(maps: &mut Maps, l: KernelLayout) -> Result<(), String> {
+    maps.config
+        .set(0, &l.flags_off, 0)
+        .map_err(|e| format!("CONFIG[0]: {e}"))?;
+    maps.config
+        .set(1, &l.tif32_mask, 0)
+        .map_err(|e| format!("CONFIG[1]: {e}"))?;
+    crate::log::info!(
+        "kernel layout: flags_off {} tif32_mask {:#x}",
+        l.flags_off,
+        l.tif32_mask
+    );
+    Ok(())
 }
 
 impl Maps {
@@ -60,6 +77,11 @@ impl Maps {
                     .ok_or_else(|| "map EVENTS not found".to_string())?,
             )
             .map_err(|e| format!("EVENTS: {e}"))?,
+            config: AyaArray::try_from(
+                bpf.take_map("CONFIG")
+                    .ok_or_else(|| "map CONFIG not found".to_string())?,
+            )
+            .map_err(|e| format!("CONFIG: {e}"))?,
         })
     }
 }

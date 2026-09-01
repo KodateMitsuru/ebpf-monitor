@@ -1,29 +1,33 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Kernel side: raw_tracepoint syscall watcher driven by config maps.
 #![no_std]
 #![no_main]
-#![allow(deprecated)]
-#![allow(clippy::missing_safety_doc)]
-#![allow(unused_unsafe)]
 
-use aya_ebpf::cty::c_char;
 use aya_ebpf::helpers::{
     bpf_get_current_pid_tgid, bpf_get_current_uid_gid, bpf_probe_read_kernel,
-    bpf_probe_read_user_str,
+    bpf_probe_read_user_str_bytes,
 };
+use aya_ebpf::helpers::generated::{bpf_get_current_comm, bpf_get_current_task};
 use aya_ebpf::macros::{map, raw_tracepoint};
-use aya_ebpf::maps::{HashMap, LruHashMap, PerCpuArray, RingBuf};
+use aya_ebpf::maps::{Array, HashMap, LruHashMap, PerCpuArray, RingBuf};
 use aya_ebpf::programs::RawTracePointContext;
 
-mod types;
+use ebpf_monitor_common::{PrintEvent, SyscallArgInfo, MAX_PATH_LEN, TASK_COMM_LEN, WATCH_BASE_MAX, SYSCALL_FLAG_PRINT, SYSCALL_FLAG_WATCH};
 
-use types::{
-    PendingPrint, PrintEvent, SyscallArgInfo, MAX_PATH_LEN, SYSCALL_FLAG_PRINT, SYSCALL_FLAG_WATCH,
-    TASK_COMM_LEN, WATCH_BASE_MAX,
-};
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct PendingPrint {
+    pub syscall_nr: u32,
+    pub watched: u8,
+    pub _pad1: [u8; 3],
+    pub sflags: u32,
+    pub fname_ptr: u64,
+}
 
-// thread_info.flags bit marking a 32-bit compat task (arm64 TIF_32BIT)
-const _TIF_32BIT: u64 = 1 << 22;
+
+
+// arm64 defaults for the CONFIG map slots; the daemon overwrites them with
+// values resolved from the running kernel's BTF before serving
+const DEFAULT_TIF_32BIT: u64 = 1 << 22;
 
 // insert value for PENDING (BPF code cannot call memset)
 static ZERO_PP: PendingPrint = PendingPrint {
@@ -37,10 +41,8 @@ static ZERO_PP: PendingPrint = PendingPrint {
 const SLOT_PATH: u32 = 0;
 const SLOT_KEY: u32 = 1;
 
-unsafe extern "C" {
-    fn bpf_get_current_task() -> isize;
-    fn bpf_get_current_comm(buf: *mut c_char, size_of_buf: u32) -> i32;
-}
+// bpf_get_current_task via generated helper (BPF_FUNC_get_current_task, no BTF)
+// bpf_get_current_comm via helper bpf_get_current_comm (no task_struct BTF)
 
 // ---------------- maps ----------------
 
@@ -58,6 +60,10 @@ static UID_WL: HashMap<u32, u8> = HashMap::with_max_entries(64, 0);
 static PENDING: LruHashMap<u64, PendingPrint> = LruHashMap::with_max_entries(1024, 0);
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
+// [0] = byte offset of task_struct->thread_info.flags,
+// [1] = _TIF_32BIT bit mask. Injected from vmlinux BTF by the daemon at load.
+#[map]
+static CONFIG: Array<u64> = Array::with_max_entries(2, 0);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -90,10 +96,13 @@ fn try_enter(ctx: &RawTracePointContext) -> Result<(), i64> {
     if task.is_null() {
         return Ok(());
     }
-    // on arm64 thread_info is task_struct's first member and flags its first
-    // field, so this word *is* thread_info.flags (no CO-RE used)
-    let tflags = unsafe { bpf_probe_read_kernel::<u64>(task)? };
-    let is32 = tflags & _TIF_32BIT != 0;
+    // thread_info.flags read through its BTF-resolved offset (0 == the static
+    // arm64 layout: thread_info first member, flags first field)
+    let flags_off = CONFIG.get(0).map(|v| *v).unwrap_or(0)  as usize;
+    let tflags = unsafe {
+        bpf_probe_read_kernel::<u64>((task as *const u8).wrapping_add(flags_off) as *const u64)?
+    };
+    let is32 = tflags &  CONFIG.get(1).map(|v| *v).unwrap_or(DEFAULT_TIF_32BIT) != 0;
 
     let info_ref = if is32 {
         unsafe { ARGS32.get(&id) }
@@ -103,8 +112,9 @@ fn try_enter(ctx: &RawTracePointContext) -> Result<(), i64> {
     let Some(info) = info_ref else { return Ok(()) };
     let info = *info;
 
-    let pid_tgid = unsafe { bpf_get_current_pid_tgid() };
-    let uid = (unsafe { bpf_get_current_uid_gid() } & 0xFFFF_FFFF) as u32;
+
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let uid = ( bpf_get_current_uid_gid()  & 0xFFFF_FFFF) as u32;
     if unsafe { PID_WL.get(&((pid_tgid >> 32) as u32)) }.is_some()
         || unsafe { UID_WL.get(&uid) }.is_some()
     {
@@ -132,21 +142,15 @@ fn try_enter(ctx: &RawTracePointContext) -> Result<(), i64> {
             watch_ok = sflags & info.fl_mask != 0;
         }
         if watch_ok {
-            watch_ok = match (unsafe { RBUF.get_ptr_mut(SLOT_PATH) }, unsafe {
-                RBUF.get_ptr_mut(SLOT_KEY)
-            }) {
+            watch_ok = match (RBUF.get_ptr_mut(SLOT_PATH), RBUF.get_ptr_mut(SLOT_KEY)) {
                 (Some(pathbuf), Some(keybuf)) => {
                     match unsafe {
-                        bpf_probe_read_user_str(fname_ptr as *const u8, &mut (*pathbuf).b)
+                        bpf_probe_read_user_str_bytes(fname_ptr as *const u8, &mut (*pathbuf).b)
                     } {
-                        Ok(len) if len > 0 => unsafe {
-                            watch_hit(
-                                (*pathbuf).b.as_ptr(),
-                                len as usize,
-                                (*keybuf).b.as_mut_ptr(),
-                            )
+                        Ok(path) => unsafe {
+                            watch_hit(path.as_ptr(), path.len(), (*keybuf).b.as_mut_ptr())
                         },
-                        _ => false,
+                        Err(_) => false,
                     }
                 }
                 _ => false,
@@ -162,7 +166,7 @@ fn try_enter(ctx: &RawTracePointContext) -> Result<(), i64> {
     }
 
     let _ = PENDING.insert(&pid_tgid, &ZERO_PP, 0);
-    if let Some(pp) = unsafe { PENDING.get_ptr_mut(&pid_tgid) } {
+    if let Some(pp) =  PENDING.get_ptr_mut(&pid_tgid)  {
         unsafe {
             (*pp).syscall_nr = id;
             (*pp).watched = watched;
@@ -175,8 +179,8 @@ fn try_enter(ctx: &RawTracePointContext) -> Result<(), i64> {
 
 unsafe fn watch_hit(path: *const u8, len: usize, key: *mut u8) -> bool {
     // walk from the path end so the loop bound is static for the verifier;
-    // -2 skips the NUL terminator of the probe-read buffer
-    let last = len as isize - 2;
+    // len is without NUL (bpf_probe_read_user_str_bytes returns &[u8] without terminator)
+    let last = len as isize - 1;
     let mut d: usize = 0;
     let mut terminated = false;
     while d < WATCH_BASE_MAX {
@@ -213,7 +217,7 @@ pub fn on_exit(ctx: RawTracePointContext) -> u32 {
 }
 
 fn try_exit(ctx: &RawTracePointContext) -> Result<(), i64> {
-    let pid_tgid = unsafe { bpf_get_current_pid_tgid() };
+    let pid_tgid = bpf_get_current_pid_tgid() ;
     let Some(pp_ref) = (unsafe { PENDING.get(&pid_tgid) }) else {
         return Ok(());
     };
@@ -234,10 +238,10 @@ fn try_exit(ctx: &RawTracePointContext) -> Result<(), i64> {
             (*p).watched = watched;
             (*p).sflags = sflags;
             bpf_get_current_comm(
-                core::ptr::addr_of_mut!((*p).comm) as *mut c_char,
+                core::ptr::addr_of_mut!((*p).comm) as *mut _,
                 TASK_COMM_LEN as u32,
             );
-            let _ = bpf_probe_read_user_str(fname_ptr as *const u8, &mut (*p).fname);
+            let _ = bpf_probe_read_user_str_bytes(fname_ptr as *const u8, &mut (*p).fname);
         }
         reservation.submit(0);
     }
@@ -245,10 +249,12 @@ fn try_exit(ctx: &RawTracePointContext) -> Result<(), i64> {
     Ok(())
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe { core::hint::unreachable_unchecked() }
 }
 
+#[cfg(not(test))]
 #[allow(dead_code)]
 fn main() {}

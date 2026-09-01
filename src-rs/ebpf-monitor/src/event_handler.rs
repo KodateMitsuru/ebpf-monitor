@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use std::collections::HashMap;
 
-use crate::types::PrintEvent;
+use ebpf_monitor_common::PrintEvent;
 use chrono::Local;
 
 use crate::events::{self, Ev};

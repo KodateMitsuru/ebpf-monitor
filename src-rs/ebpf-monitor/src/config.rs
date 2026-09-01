@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use thiserror::Error;
 
-use crate::types::{SyscallArgInfo, SYSCALL_FLAG_PRINT, SYSCALL_FLAG_WATCH, WATCH_BASE_MAX};
+use ebpf_monitor_common::{SyscallArgInfo, SYSCALL_FLAG_PRINT, SYSCALL_FLAG_WATCH, WATCH_BASE_MAX};
 
 #[derive(Error, Debug)]
 pub enum ConfigError {
@@ -299,12 +299,16 @@ impl Config {
 #[cfg(test)]
 mod shipped_config_tests {
     use super::Config;
-    use crate::types::SYSCALL_FLAG_WATCH;
+    use ebpf_monitor_common::SYSCALL_FLAG_WATCH;
     use std::path::Path;
     #[test]
     fn shipped_hunt_config_validates() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../template/config.toml");
-        let cfg = Config::load(&path).expect("load shipped config");
+        let candidates = [
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../template/config.toml"),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../template/config.toml"),
+        ];
+        let path = candidates.iter().find(|p| p.exists()).expect("template/config.toml not found");
+        let cfg = Config::load(path).expect("load shipped config");
         let v = cfg.validate().expect("validate shipped config");
 
         let openat = v

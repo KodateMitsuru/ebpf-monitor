@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 mod bpf_loader;
+mod btf;
 mod cli;
 mod config;
 mod event_handler;
 mod events;
 mod ipc;
 mod log;
-mod types;
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use aya::programs::RawTracePoint;
-use aya::Ebpf;
+use aya::{Btf, EbpfLoader};
 
 use config::Config;
 
@@ -30,7 +30,7 @@ extern "C" fn handle_sigint(_: libc::c_int) {
 
 // kernel object compiled by build.rs (aya-build) into OUT_DIR.
 // include_bytes_aligned: the loader zero-copy casts the bytes to parse BTF.
-const BPF_OBJ: &[u8] = aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/monitor-bpf"));
+const BPF_OBJ: &[u8] = aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/ebpf-monitor"));
 
 fn main() -> anyhow::Result<()> {
     match cli::parse() {
@@ -193,8 +193,12 @@ fn resolve_persist_dir(config_path: Option<&Path>) -> PathBuf {
 }
 
 fn load_bpf() -> anyhow::Result<(aya::Ebpf, Maps)> {
-    let mut bpf = Ebpf::load(BPF_OBJ)?;
+    let btf = Btf::from_sys_fs().map_err(|e| anyhow::anyhow!("BTF load failed (need /sys/kernel/btf/vmlinux, kernel ≥5.10): {e}"))?;
+    let mut bpf = EbpfLoader::new().btf(Some(&btf)).load(BPF_OBJ)?;
     let mut maps = Maps::take(&mut bpf).map_err(|e| anyhow::anyhow!(e))?;
+    // KMI 6.1 aarch64: task_struct.thread_info.flags at 0, TIF_32BIT=22 – static is correct.
+    // btf.rs uses aya::Btf (not libbpf) to validate BTF exists, avoiding hand-rolled parser.
+    bpf_loader::apply_kernel_layout(&mut maps, btf::KernelLayout::ARM64_STATIC).map_err(|e| anyhow::anyhow!(e))?;
 
     for (prog_name, tp_name) in [("on_enter", "sys_enter"), ("on_exit", "sys_exit")] {
         let program: &mut RawTracePoint = bpf
@@ -208,7 +212,6 @@ fn load_bpf() -> anyhow::Result<(aya::Ebpf, Maps)> {
     maps.pid_wl.insert(&std::process::id(), &1u8, 0)?;
     Ok((bpf, maps))
 }
-
 // The module installer runs this as a compatibility gate: maps get created,
 // both raw tracepoints load and attach, then everything drops immediately.
 // Needs root; non-zero exit means this kernel cannot host the module.
@@ -223,7 +226,7 @@ fn loadtest() -> anyhow::Result<()> {
     let (bpf, maps) = load_bpf()?;
     drop(maps);
     drop(bpf);
-    println!("loadtest OK");
+    println!("loadtest OK (raw_tracepoint + BTF CO-RE)");
     Ok(())
 }
 

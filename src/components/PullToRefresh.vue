@@ -16,23 +16,40 @@ const busy = ref(false)
 let startY = 0
 let active = false
 
-function onStart(e: TouchEvent): void {
+function isAtTop(): boolean {
   const el = scroller.value
-  if (!el || el.scrollTop > 0 || busy.value) { active = false; return }
-  startY = e.touches[0].clientY
+  return !!el && el.scrollTop <= 0
+}
+
+function getY(e: TouchEvent | PointerEvent): number {
+  const te = e as TouchEvent
+  return te.touches ? te.touches[0].clientY : (e as PointerEvent).clientY
+}
+
+function onStart(e: TouchEvent | PointerEvent): void {
+  if (busy.value) { active = false; return }
+  if (!isAtTop()) { active = false; return }
+  startY = getY(e)
   active = true
 }
 
-function onMove(e: TouchEvent): void {
-  if (!active) return
-  const dy = e.touches[0].clientY - startY
+function onMove(e: TouchEvent | PointerEvent): void {
+  if (!active || busy.value) return
+  if (!isAtTop()) {
+    pull.value = 0
+    pulling.value = false
+    active = false
+    return
+  }
+  const dy = getY(e) - startY
   if (dy <= 0) {
     pull.value = 0
     return
   }
   pulling.value = true
   pull.value = Math.min(MAX, dy * 0.45)
-  if (e.cancelable) e.preventDefault()
+  // touchmove is passive by default in Vue; prevent scroll only when pull active
+  if ((e as any).cancelable !== false) (e as TouchEvent).preventDefault?.()
 }
 
 async function onEnd(): Promise<void> {
@@ -42,7 +59,13 @@ async function onEnd(): Promise<void> {
   if (pull.value >= TRIGGER && !busy.value) {
     busy.value = true
     pull.value = TRIGGER
-    try { await props.onRefresh() } catch { /* swallow refresh errors */ } finally { busy.value = false }
+    try {
+      await props.onRefresh()
+    } finally {
+      busy.value = false
+      pull.value = 0
+    }
+    return
   }
   pull.value = 0
 }
@@ -56,12 +79,12 @@ const boxTransition = computed(() =>
 </script>
 
 <template>
-  <div class="ptr">
-    <div ref="scroller" class="ptr__scroll"
-         @touchstart="onStart" @touchmove="onMove" @touchend="onEnd" @touchcancel="onEnd">
-      <Motion class="ptr__box" :animate="boxAnimate" :transition="boxTransition">
-        <MiuixProgressIndicator v-if="busy || pull > 10" type="infinite" :size="20" />
-      </Motion>
+  <div class="ptr" @touchstart.passive="onStart" @touchmove="onMove" @touchend="onEnd" @touchcancel="onEnd"
+       @pointerdown="onStart" @pointermove="onMove" @pointerup="onEnd" @pointercancel="onEnd">
+    <Motion class="ptr__box" :animate="boxAnimate" :transition="boxTransition">
+      <MiuixProgressIndicator v-if="busy || pull > 10" type="infinite" :size="20" />
+    </Motion>
+    <div ref="scroller" class="ptr__scroll">
       <slot />
     </div>
   </div>
@@ -73,6 +96,7 @@ const boxTransition = computed(() =>
   min-height: 0;
   display: flex;
   flex-direction: column;
+  touch-action: pan-y;
 }
 .ptr__scroll {
   flex: 1;
@@ -85,5 +109,6 @@ const boxTransition = computed(() =>
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  flex: none;
 }
 </style>

@@ -7,9 +7,9 @@
   "scripts": {
     "dev": "vite",
     "typecheck": "vue-tsc --noEmit",
-    "build": "vue-tsc --noEmit && vite build",
-    "daemon": "node scripts/daemon.mjs",
-    "dist": "node scripts/dist.mjs"
+    "build:web": "vue-tsc --noEmit && vite build",
+    "build": "node scripts/build.mjs",
+    "daemon": "node scripts/daemon.mjs"
   },
   "dependencies": {
     "kernelsu": "^3.0.2",
