@@ -12,7 +12,7 @@
 └── src-rs/
     ├── .cargo/config.toml    aarch64-unknown-linux-musl is linked with rust-lld
     └── crates/
-        ├── ebpf-monitor/     the daemon (config / types / ipc / cli); build.rs stages the BPF object
+        ├── ebpf-monitor/     the daemon (config / types / ipc / cli); build.rs compiles the kernel crate via aya-build
         └── monitor-bpf/      the kernel program (no_std, aya-ebpf) and its copy of the ABI types
 ```
 
@@ -92,9 +92,8 @@ rustup toolchain install nightly --profile minimal   # once; the kernel build ne
 
 pnpm install
 pnpm dev          # frontend dev server
-pnpm ebpf         # kernel object → src-rs/target/bpfel-unknown-none/release/monitor-bpf
-pnpm daemon       # aarch64-musl daemon (build.rs requires the object produced by `pnpm ebpf`)
-pnpm dist         # kernel → daemon → frontend → module zip with the injected version
+pnpm daemon       # aarch64-musl daemon; build.rs compiles the kernel object first
+pnpm dist         # daemon (kernel + userspace) -> frontend -> module zip
 
 cd src-rs
 cargo test -p ebpf-monitor
@@ -103,13 +102,15 @@ cargo test -p ebpf-monitor
 
 Details:
 
-- `pnpm ebpf` runs `rustup run nightly cargo build -p monitor-bpf --target
-  bpfel-unknown-none -Z build-std=core,compiler_builtins
-  -Z build-std-features=compiler-builtins-mem`. Flags arrive through
-  `CARGO_ENCODED_RUSTFLAGS` (unit-separated), selecting the target-architecture
-  bindings and passing `-Clink-arg=--btf` to bpf-linker.
-- `crates/ebpf-monitor/build.rs` copies the kernel object into `OUT_DIR`,
-  and `main.rs` embeds it with `include_bytes!`.
+- `crates/ebpf-monitor/build.rs` calls `aya_build::build_ebpf`, which drives a
+  nightly `cargo build --package monitor-bpf --target bpfel-unknown-none
+  -Z build-std=core` and sets `CARGO_ENCODED_RUSTFLAGS` to
+  `--cfg=bpf_target_arch="<arch>"` + `-Cdebuginfo=2` + `-Clink-arg=--btf`.
+  The resulting object is copied into `OUT_DIR` and embedded by `main.rs`
+  with `include_bytes!`. aya-build owns these flags; do not hand-copy them —
+  omitting `-Cdebuginfo=2` drops the func_info aya needs to relocate calls
+  into compiler-builtins helpers, failing load with
+  `function 0x… not found while relocating`.
 - The zip is written by yazl: files are deflate-compressed, directory
   entries stored; unix modes are 0755 for `*.sh` and the binary, 0644 for
   everything else.

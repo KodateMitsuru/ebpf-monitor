@@ -216,6 +216,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "aya",
+ "aya-build",
  "chrono",
  "libc",
  "parking_lot",

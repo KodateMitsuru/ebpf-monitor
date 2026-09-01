@@ -8,7 +8,6 @@
     "dev": "vite",
     "typecheck": "vue-tsc --noEmit",
     "build": "vue-tsc --noEmit && vite build",
-    "ebpf": "node scripts/ebpf.mjs",
     "daemon": "node scripts/daemon.mjs",
     "dist": "node scripts/dist.mjs"
   },

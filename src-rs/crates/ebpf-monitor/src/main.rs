@@ -28,8 +28,8 @@ extern "C" fn handle_sigint(_: libc::c_int) {
     RUNNING.store(false, Ordering::Relaxed);
 }
 
-// produced by `pnpm ebpf`, staged into OUT_DIR by build.rs
-const BPF_OBJ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/monitor_bpf.o"));
+// kernel object compiled by build.rs (aya-build) into OUT_DIR
+const BPF_OBJ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/monitor-bpf"));
 
 fn main() -> anyhow::Result<()> {
     match cli::parse() {

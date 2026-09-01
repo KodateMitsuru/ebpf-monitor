@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Cross-compiles the userspace daemon for aarch64-linux-musl. The kernel-side
+// object is compiled by crates/ebpf-monitor/build.rs via aya-build.
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 

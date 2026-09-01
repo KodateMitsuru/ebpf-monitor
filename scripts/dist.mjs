@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Full pipeline: daemon (build.rs compiles the eBPF object through aya-build)
+// -> frontend (vite, into dist/webroot) -> module zip with the version from
+// package.json injected into module.prop.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createWriteStream, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -10,16 +13,15 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const rs = join(root, 'src-rs');
 const node = (f) => execFileSync(process.execPath, [join(root, 'scripts', f)], { cwd: root, stdio: 'inherit' });
 
-node('ebpf.mjs');
 node('daemon.mjs');
-console.log('==> 前端: pnpm run build（typecheck + vite → dist/webroot）');
+console.log('==> frontend: pnpm run build (typecheck + vite -> dist/webroot)');
 execFileSync('pnpm', ['run', 'build'], { cwd: root, stdio: 'inherit' });
 
 const bin = join(rs, 'target/aarch64-unknown-linux-musl/release/ebpf-monitor');
 const tpl = join(root, 'template');
 const webroot = join(root, 'dist/webroot');
 if (!existsSync(join(webroot, 'index.html'))) {
-  console.error('dist/webroot 缺失（vite 构建未产出？）');
+  console.error('dist/webroot missing (frontend build did not run?)');
   process.exit(1);
 }
 

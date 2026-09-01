@@ -12,7 +12,7 @@
 └── src-rs/
     ├── .cargo/config.toml    aarch64-unknown-linux-musl 用 rust-lld 链接
     └── crates/
-        ├── ebpf-monitor/     守护进程（config / types / ipc / cli）；build.rs 装配 BPF 对象
+        ├── ebpf-monitor/     守护进程（config / types / ipc / cli）；build.rs 经 aya-build 编译内核 crate
         └── monitor-bpf/      内核程序（no_std，aya-ebpf）及其一份 ABI 类型副本
 ```
 
@@ -80,9 +80,8 @@ rustup toolchain install nightly --profile minimal   # 仅首次；内核侧构�
 
 pnpm install
 pnpm dev          # 前端开发服务器
-pnpm ebpf         # 内核对象 → src-rs/target/bpfel-unknown-none/release/monitor-bpf
-pnpm daemon       # aarch64-musl 守护进程（build.rs 需已有 `pnpm ebpf` 的产物）
-pnpm dist         # 内核 → 守护进程 → 前端 → 注入版本号的模块 zip
+pnpm daemon       # aarch64-musl 守护进程；build.rs 会先编译内核对象
+pnpm dist         # 守护进程（内核 + 用户态）-> 前端 -> 模块 zip
 
 cd src-rs
 cargo test -p ebpf-monitor
@@ -91,12 +90,13 @@ cargo test -p ebpf-monitor
 
 细节：
 
-- `pnpm ebpf` 执行 `rustup run nightly cargo build -p monitor-bpf --target
-  bpfel-unknown-none -Z build-std=core,compiler_builtins
-  -Z build-std-features=compiler-builtins-mem`。编译参数经
-  `CARGO_ENCODED_RUSTFLAGS`（以分隔符连接）传入，选定目标架构绑定并向
-  bpf-linker 传 `-Clink-arg=--btf`。
-- `crates/ebpf-monitor/build.rs` 把内核对象复制到 `OUT_DIR`，`main.rs` 以
-  `include_bytes!` 内嵌。
+- `crates/ebpf-monitor/build.rs` 调用 `aya_build::build_ebpf`，它驱动
+  nightly `cargo build --package monitor-bpf --target bpfel-unknown-none
+  -Z build-std=core`，并把 `CARGO_ENCODED_RUSTFLAGS` 设为
+  `--cfg=bpf_target_arch="<arch>"` + `-Cdebuginfo=2` + `-Clink-arg=--btf`。
+  产物复制进 `OUT_DIR`，`main.rs` 以 `include_bytes!` 内嵌。这些 flag 归
+  aya-build 所有，不要手抄——漏掉 `-Cdebuginfo=2` 会丢 func_info，aya 无法重定位
+  对 compiler-builtins 辅助函数的调用，加载即报
+  `function 0x… not found while relocating`。
 - zip 由 yazl 写出：文件 deflate 压缩、目录项 stored；unix 权限对 `*.sh`
   与二进制设 0755，其余设 0644。
