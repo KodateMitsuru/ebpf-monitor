@@ -67,12 +67,12 @@ impl Maps {
 pub fn load_syscall_args(maps: &mut Maps, validated: &ValidatedConfig) -> Result<(), String> {
     for (nr, info) in &validated.syscall_args_64 {
         maps.args64
-            .insert(*nr, ArgInfo::from(info), 0)
+            .insert(nr, &ArgInfo::from(info), 0)
             .map_err(|e| format!("args64[{nr}]: {e}"))?;
     }
     for (nr, info) in &validated.syscall_args_32 {
         maps.args32
-            .insert(*nr, ArgInfo::from(info), 0)
+            .insert(nr, &ArgInfo::from(info), 0)
             .map_err(|e| format!("args32[{nr}]: {e}"))?;
     }
     crate::log::info!(
@@ -88,7 +88,7 @@ pub fn load_watch_rules(maps: &mut Maps, validated: &ValidatedConfig) -> Result<
         let mut key = [0u8; WATCH_BASE_MAX];
         key[WATCH_BASE_MAX - b.len()..].copy_from_slice(b.as_bytes());
         maps.watch
-            .insert(key, 1u8, 0)
+            .insert(&key, &1u8, 0)
             .map_err(|e| format!("watch[{b}]: {e}"))?;
     }
     if !validated.watch_basenames.is_empty() {
@@ -100,12 +100,12 @@ pub fn load_watch_rules(maps: &mut Maps, validated: &ValidatedConfig) -> Result<
 pub fn load_whitelist(maps: &mut Maps, config: &Config) -> Result<(), String> {
     for &uid in &config.whitelist.uid {
         maps.uid_wl
-            .insert(uid, 1u8, 0)
+            .insert(&uid, &1u8, 0)
             .map_err(|e| format!("uid_wl: {e}"))?;
     }
     for &pid in &config.whitelist.pid {
         maps.pid_wl
-            .insert(pid, 1u8, 0)
+            .insert(&pid, &1u8, 0)
             .map_err(|e| format!("pid_wl: {e}"))?;
     }
     crate::log::info!(

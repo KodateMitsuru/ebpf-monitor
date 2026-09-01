@@ -102,6 +102,12 @@ cargo test -p ebpf-monitor
 
 Details:
 
+- `aya`, `aya-ebpf` and `aya-build` are pinned to one revision of aya git
+  `main` (see Cargo.toml; Cargo.lock pins the commit). Reason: bpf-linker
+  0.11 emits the relocatable model — helper and function calls as
+  `BPF_PSEUDO_CALL` placeholders — which only the newer loader resolves;
+  the crates.io release (0.14) fails at load with
+  `function 0x… not found while relocating`
 - `crates/ebpf-monitor/build.rs` calls `aya_build::build_ebpf`, which drives a
   nightly `cargo build --package monitor-bpf --target bpfel-unknown-none
   -Z build-std=core` and sets `CARGO_ENCODED_RUSTFLAGS` to

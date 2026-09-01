@@ -5,7 +5,7 @@ edition = "2021"
 license = "GPL-3.0-or-later"
 
 [dependencies]
-aya = "0.14"
+aya = { git = "https://github.com/aya-rs/aya", rev = "03bee7dca209651c2f8a951d362665294c0144c9" }
 libc = "0.2"
 anyhow = "1"
 toml = "0.9"
@@ -17,4 +17,4 @@ chrono = "0.4"
 plain = "0.2"
 
 [build-dependencies]
-aya-build = "0.2"
+aya-build = { git = "https://github.com/aya-rs/aya", rev = "03bee7dca209651c2f8a951d362665294c0144c9" }

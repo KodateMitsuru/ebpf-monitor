@@ -9,4 +9,4 @@ name = "monitor-bpf"
 path = "src/main.rs"
 
 [dependencies]
-aya-ebpf = "0.2"
+aya-ebpf = { git = "https://github.com/aya-rs/aya", rev = "03bee7dca209651c2f8a951d362665294c0144c9" }

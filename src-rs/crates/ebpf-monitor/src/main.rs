@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use aya::programs::RawTracePoint;
-use aya::EbpfLoader;
+use aya::Ebpf;
 
 use config::Config;
 
@@ -193,7 +193,7 @@ fn resolve_persist_dir(config_path: Option<&Path>) -> PathBuf {
 }
 
 fn load_bpf() -> anyhow::Result<(aya::Ebpf, Maps)> {
-    let mut bpf = EbpfLoader::new().load(BPF_OBJ)?;
+    let mut bpf = Ebpf::load(BPF_OBJ)?;
     let mut maps = Maps::take(&mut bpf).map_err(|e| anyhow::anyhow!(e))?;
 
     for (prog_name, tp_name) in [("on_enter", "sys_enter"), ("on_exit", "sys_exit")] {
@@ -205,7 +205,7 @@ fn load_bpf() -> anyhow::Result<(aya::Ebpf, Maps)> {
         program.attach(tp_name)?;
     }
 
-    maps.pid_wl.insert(std::process::id(), 1u8, 0)?;
+    maps.pid_wl.insert(&std::process::id(), &1u8, 0)?;
     Ok((bpf, maps))
 }
 

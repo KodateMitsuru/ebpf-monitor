@@ -15,5 +15,15 @@ PERSIST=/data/adb/ebpf-monitor
 
     [ -f "$PERSIST/config.toml" ] || cp "$MODDIR/config.toml" "$PERSIST/config.toml"
 
+    # If this boot's binary cannot load its own program, say so loudly in
+    # logcat instead of dying silently.
+    out=$("$MODDIR/ebpf-monitor" --loadtest 2>&1)
+    rc=$?
+    printf '%s\n' "$out" | while IFS= read -r l; do log -t ebpf-monitor "$l"; done
+    if [ "$rc" -ne 0 ]; then
+        log -t ebpf-monitor "loadtest failed; daemon not started"
+        exit 1
+    fi
+
     "$MODDIR/ebpf-monitor" -c "$PERSIST/config.toml" >/dev/null 2>&1 &
 ) &
