@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#![no_std]
 
 pub const MAX_PATH_LEN: usize = 256;
 pub const TASK_COMM_LEN: usize = 16;

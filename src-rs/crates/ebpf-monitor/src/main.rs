@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use aya::programs::RawTracePoint;
-use aya::Ebpf;
+use aya::EbpfLoader;
 
 use config::Config;
 
@@ -28,8 +28,9 @@ extern "C" fn handle_sigint(_: libc::c_int) {
     RUNNING.store(false, Ordering::Relaxed);
 }
 
-// kernel object compiled by build.rs (aya-build) into OUT_DIR
-const BPF_OBJ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/monitor-bpf"));
+// kernel object compiled by build.rs (aya-build) into OUT_DIR.
+// include_bytes_aligned: the loader zero-copy casts the bytes to parse BTF.
+const BPF_OBJ: &[u8] = aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/monitor-bpf"));
 
 fn main() -> anyhow::Result<()> {
     match cli::parse() {
@@ -191,8 +192,8 @@ fn resolve_persist_dir(config_path: Option<&Path>) -> PathBuf {
     fallback
 }
 
-fn load_bpf() -> anyhow::Result<(Ebpf, Maps)> {
-    let mut bpf = Ebpf::load(BPF_OBJ)?;
+fn load_bpf() -> anyhow::Result<(aya::Ebpf, Maps)> {
+    let mut bpf = EbpfLoader::new().load(BPF_OBJ)?;
     let mut maps = Maps::take(&mut bpf).map_err(|e| anyhow::anyhow!(e))?;
 
     for (prog_name, tp_name) in [("on_enter", "sys_enter"), ("on_exit", "sys_exit")] {
