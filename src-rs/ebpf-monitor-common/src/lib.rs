@@ -1,13 +1,11 @@
 #![no_std]
 
-//! Shared ABI – BTF ≥5.10 guaranteed, no compat fallback.
-//! 304 B layout kept for zero-copy RingBuf compatibility.
+//! Shared ABI – 560 B FileEvent for zero-copy ringbuf.
 
 pub const MAX_PATH_LEN: usize = 256;
 pub const TASK_COMM_LEN: usize = 16;
 pub const WATCH_BASE_MAX: usize = 64;
 
-// kept for config.toml validation compatibility; LSM ignores it
 pub const SYSCALL_FLAG_PRINT: u32 = 1 << 1;
 pub const SYSCALL_FLAG_WATCH: u32 = 1 << 2;
 
@@ -20,8 +18,7 @@ pub struct SyscallArgInfo {
     pub fl_mask: u32,
 }
 
-/// File operation observed by LSM hook – replaces the old
-/// `SYSCALL_FLAG_PRINT/WATCH + pt_regs slot` table.
+/// File operation derived from watch groups.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileOp {
@@ -44,9 +41,7 @@ impl From<u32> for FileOp {
     }
 }
 
-/// RingBuf event – single ABI for LSM and (former) raw_tracepoint.
-/// `syscall_nr` field now carries `FileOp as u32` for LSM; kept name for
-/// layout compatibility (`size_of == 304`).
+/// Ringbuf event carrying file lifecycle. `old_fname` is set only for rename.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct FileEvent {
@@ -60,6 +55,7 @@ pub struct FileEvent {
     pub sflags: u32,
     pub comm: [u8; TASK_COMM_LEN],
     pub fname: [u8; MAX_PATH_LEN],
+    pub old_fname: [u8; MAX_PATH_LEN],
 }
 
 pub type PrintEvent = FileEvent;
@@ -90,6 +86,6 @@ mod tests {
     use super::*;
     #[test]
     fn abi_layout() {
-        assert_eq!(core::mem::size_of::<FileEvent>(), 304);
+        assert_eq!(core::mem::size_of::<FileEvent>(), 560);
     }
 }

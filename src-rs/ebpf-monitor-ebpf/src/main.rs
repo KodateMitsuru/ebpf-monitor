@@ -21,6 +21,7 @@ pub struct PendingPrint {
     pub _pad1: [u8; 3],
     pub sflags: u32,
     pub fname_ptr: u64,
+    pub old_fname_ptr: u64,
 }
 
 
@@ -28,7 +29,6 @@ pub struct PendingPrint {
 // arm64 defaults for the CONFIG map slots; the daemon overwrites them with
 // values resolved from the running kernel's BTF before serving
 const DEFAULT_TIF_32BIT: u64 = 1 << 22;
-
 // insert value for PENDING (BPF code cannot call memset)
 static ZERO_PP: PendingPrint = PendingPrint {
     syscall_nr: 0,
@@ -36,6 +36,7 @@ static ZERO_PP: PendingPrint = PendingPrint {
     _pad1: [0; 3],
     sflags: 0,
     fname_ptr: 0,
+    old_fname_ptr: 0,
 };
 
 const SLOT_PATH: u32 = 0;
@@ -44,7 +45,6 @@ const SLOT_KEY: u32 = 1;
 // bpf_get_current_task via generated helper (BPF_FUNC_get_current_task, no BTF)
 // bpf_get_current_comm via helper bpf_get_current_comm (no task_struct BTF)
 
-// ---------------- maps ----------------
 
 #[map]
 static ARGS64: HashMap<u32, SyscallArgInfo> = HashMap::with_max_entries(32, 0);
@@ -80,7 +80,6 @@ impl Default for Scratch {
 #[map]
 static RBUF: PerCpuArray<Scratch> = PerCpuArray::with_max_entries(2, 0);
 
-// ---------------- sys_enter ----------------
 
 #[raw_tracepoint(tracepoint = "sys_enter")]
 pub fn on_enter(ctx: RawTracePointContext) -> u32 {
@@ -89,7 +88,7 @@ pub fn on_enter(ctx: RawTracePointContext) -> u32 {
 }
 
 fn try_enter(ctx: &RawTracePointContext) -> Result<(), i64> {
-    let regs = ctx.arg::<u64>(0); // struct pt_regs *
+    let regs = ctx.arg::<u64>(0);
     let id = ctx.arg::<u64>(1) as u32;
 
     let task = unsafe { bpf_get_current_task() } as *const u64;
@@ -121,11 +120,23 @@ fn try_enter(ctx: &RawTracePointContext) -> Result<(), i64> {
         return Ok(());
     }
 
-    let fname_ptr = unsafe {
+    let mut fname_ptr = unsafe {
         bpf_probe_read_kernel::<u64>((regs + info.str_reg_idx as u64 * 8) as *const u64)?
     };
     if fname_ptr == 0 {
         return Ok(());
+    }
+    let mut old_fname_ptr: u64 = 0;
+    // rename family: capture both old and new paths for lifecycle chain
+    let is_rename = id == 34 || id == 38 || id == 276;
+    if is_rename {
+        old_fname_ptr = fname_ptr;
+        let new_ptr = unsafe {
+            bpf_probe_read_kernel::<u64>((regs + (info.str_reg_idx as u64 + 2) * 8) as *const u64)?
+        };
+        if new_ptr != 0 {
+            fname_ptr = new_ptr;
+        }
     }
 
     let mut watched = 0u8;
@@ -142,19 +153,18 @@ fn try_enter(ctx: &RawTracePointContext) -> Result<(), i64> {
             watch_ok = sflags & info.fl_mask != 0;
         }
         if watch_ok {
-            watch_ok = match (RBUF.get_ptr_mut(SLOT_PATH), RBUF.get_ptr_mut(SLOT_KEY)) {
-                (Some(pathbuf), Some(keybuf)) => {
-                    match unsafe {
-                        bpf_probe_read_user_str_bytes(fname_ptr as *const u8, &mut (*pathbuf).b)
-                    } {
-                        Ok(path) => unsafe {
-                            watch_hit(path.as_ptr(), path.len(), (*keybuf).b.as_mut_ptr())
-                        },
-                        Err(_) => false,
+            let mut hit = false;
+            if let (Some(pathbuf), Some(keybuf)) = (RBUF.get_ptr_mut(SLOT_PATH), RBUF.get_ptr_mut(SLOT_KEY)) {
+                if let Ok(path) = unsafe { bpf_probe_read_user_str_bytes(fname_ptr as *const u8, &mut (*pathbuf).b) } {
+                    hit = unsafe { watch_hit(path.as_ptr(), path.len(), (*keybuf).b.as_mut_ptr()) };
+                }
+                if !hit && old_fname_ptr != 0 {
+                    if let Ok(path) = unsafe { bpf_probe_read_user_str_bytes(old_fname_ptr as *const u8, &mut (*pathbuf).b) } {
+                        hit = unsafe { watch_hit(path.as_ptr(), path.len(), (*keybuf).b.as_mut_ptr()) };
                     }
                 }
-                _ => false,
-            };
+            }
+            watch_ok = hit;
         }
         if watch_ok {
             watched = 1;
@@ -172,6 +182,7 @@ fn try_enter(ctx: &RawTracePointContext) -> Result<(), i64> {
             (*pp).watched = watched;
             (*pp).sflags = sflags;
             (*pp).fname_ptr = fname_ptr;
+            (*pp).old_fname_ptr = old_fname_ptr;
         }
     }
     Ok(())
@@ -208,7 +219,6 @@ unsafe fn watch_hit(path: *const u8, len: usize, key: *mut u8) -> bool {
     unsafe { WATCH_RULES.get(kref) }.is_some()
 }
 
-// ---------------- sys_exit ----------------
 
 #[raw_tracepoint(tracepoint = "sys_exit")]
 pub fn on_exit(ctx: RawTracePointContext) -> u32 {
@@ -225,6 +235,7 @@ fn try_exit(ctx: &RawTracePointContext) -> Result<(), i64> {
     let watched = (*pp_ref).watched;
     let sflags = (*pp_ref).sflags;
     let fname_ptr = (*pp_ref).fname_ptr;
+    let old_fname_ptr = (*pp_ref).old_fname_ptr;
 
     let ret = ctx.arg::<i64>(1);
     if let Some(mut reservation) = EVENTS.reserve_bytes(core::mem::size_of::<PrintEvent>(), 0) {
@@ -242,6 +253,9 @@ fn try_exit(ctx: &RawTracePointContext) -> Result<(), i64> {
                 TASK_COMM_LEN as u32,
             );
             let _ = bpf_probe_read_user_str_bytes(fname_ptr as *const u8, &mut (*p).fname);
+            if old_fname_ptr != 0 {
+                let _ = bpf_probe_read_user_str_bytes(old_fname_ptr as *const u8, &mut (*p).old_fname);
+            }
         }
         reservation.submit(0);
     }

@@ -7,7 +7,7 @@
     "jsx": "preserve",
     "resolveJsonModule": true,
     "esModuleInterop": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "lib": ["ES2020", "DOM", "DOM.Iterable", "ES2024.Promise"],
     "skipLibCheck": true,
     "noEmit": true,
     "baseUrl": ".",

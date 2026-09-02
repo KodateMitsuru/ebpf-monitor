@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! KMI 6.1: task_struct.thread_info.flags at 0, TIF_32BIT=22 – static, no hand-rolled parser.
+//! KMI 6.1: thread_info.flags at 0, TIF_32BIT=22.
 
 #[derive(Debug, Clone, Copy)]
 pub struct KernelLayout {

@@ -102,7 +102,7 @@ const boxTransition = computed(() =>
   flex: 1;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding-bottom: 12px;
+  padding-bottom: 80px;
 }
 .ptr__box {
   display: flex;

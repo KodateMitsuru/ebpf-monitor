@@ -13,8 +13,7 @@ PERSIST=/data/adb/ebpf-monitor
     mkdir -p "$PERSIST"
     chmod 700 "$PERSIST"
 
-    [ -f "$PERSIST/config.toml" ] || cp "$MODDIR/config.toml" "$PERSIST/config.toml"
-
+    out=$("$MODDIR/ebpf-monitor" --loadtest 2>&1)
     # If this boot's binary cannot load its own program, say so loudly in
     # logcat instead of dying silently.
     out=$("$MODDIR/ebpf-monitor" --loadtest 2>&1)
@@ -25,5 +24,5 @@ PERSIST=/data/adb/ebpf-monitor
         exit 1
     fi
 
-    "$MODDIR/ebpf-monitor" -c "$PERSIST/config.toml" >/dev/null 2>&1 &
+    "$MODDIR/ebpf-monitor" &
 ) &

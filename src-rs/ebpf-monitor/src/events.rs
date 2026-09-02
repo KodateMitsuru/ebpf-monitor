@@ -1,18 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-use std::collections::VecDeque;
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use automerge::transaction::Transactable;
+use automerge::{Automerge, ObjType, ReadDoc, ROOT};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
-pub const RING_CAP: usize = 2000;
-pub const FILE_CAP: u64 = 2 * 1024 * 1024;
-pub const KEEP_TAIL: u64 = 512 * 1024;
 
-#[derive(Clone, Serialize, Deserialize)]
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Ev {
     pub seq: u64,
     pub ts: String,
@@ -28,177 +25,137 @@ pub struct Ev {
     pub file: String,
     #[serde(default)]
     pub cmd: String,
+    #[serde(default)]
+    pub old_file: String,
+    #[serde(default)]
+    pub dev: u64,
+    #[serde(default)]
+    pub ino: u64,
+    #[serde(default)]
+    pub file_id: u64,
+    #[serde(default)]
+    pub prev_hash: String,
+    pub hash: String,
 }
 
 impl Ev {
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(self).unwrap_or_default()
+    pub fn to_json(&self) -> String { serde_json::to_string(self).unwrap_or_default() }
+    pub fn file_id_computed(&self) -> u64 {
+        if self.file_id != 0 { self.file_id } else if self.ino != 0 { (self.dev << 32) ^ self.ino } else { use std::hash::{Hash, Hasher}; let mut h = std::collections::hash_map::DefaultHasher::new(); self.file.hash(&mut h); h.finish() }
     }
 }
 
 struct Inner {
-    ring: VecDeque<Ev>,
-    last_seq: u64,
+    doc: Automerge,
+    events: automerge::ObjId,
     path: PathBuf,
-    file: Option<File>,
-    pushes_since_rotate: usize,
 }
-
 pub struct Store(Mutex<Inner>);
-
 static GLOBAL: OnceLock<Store> = OnceLock::new();
 
+fn hash_of(s: &str) -> String { blake3::hash(s.as_bytes()).to_hex().to_string() }
+
 pub fn init(persist_dir: &Path) {
-    let path = persist_dir.join("events.jsonl");
     let _ = std::fs::create_dir_all(persist_dir);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(persist_dir, std::fs::Permissions::from_mode(0o700));
-    }
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .ok();
-    let last_seq = scan_last_seq(&path);
-    let _ = GLOBAL.set(Store(Mutex::new(Inner {
-        ring: VecDeque::new(),
-        last_seq,
-        path,
-        file,
-        pushes_since_rotate: 0,
-    })));
+    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; let _ = std::fs::set_permissions(persist_dir, std::fs::Permissions::from_mode(0o700)); }
+    let path = persist_dir.join("forest.bin");
+    let mut doc = if path.exists() { std::fs::read(&path).ok().and_then(|b| Automerge::load(&b).ok()).unwrap_or_else(Automerge::new) } else { Automerge::new() };
+    let events = match doc.get(ROOT, "events").unwrap_or(None) {
+        Some((v, id)) if v.is_object() => id,
+        _ => { let mut tx = doc.transaction(); let id = tx.put_object(ROOT, "events", ObjType::List).unwrap(); tx.commit(); id }
+    };
+    let _ = GLOBAL.set(Store(Mutex::new(Inner { doc, events, path })));
 }
 
 pub fn push(mut ev: Ev) {
-    if let Some(store) = GLOBAL.get() {
-        store.0.lock().push(&mut ev);
+    let Some(s) = GLOBAL.get() else { return };
+    let mut g = s.0.lock();
+    let fid = ev.file_id_computed();
+    ev.file_id = fid;
+    let prev_hash = {
+        let len = g.doc.length(&g.events);
+        if len == 0 { String::new() } else {
+            g.doc.get(&g.events, len - 1).ok().flatten().and_then(|(v, id)| {
+                if v.is_object() { g.doc.get(&id, "hash").ok().flatten().map(|(vv, _)| vv.to_str().map(|s| s.to_string()).unwrap_or_default()) } else { None }
+            }).unwrap_or_default()
+        }
+    };
+    ev.prev_hash = prev_hash.clone();
+    ev.hash = hash_of(&format!("{}|{}|{}|{}|{}", fid, ev.op, ev.file, ev.epoch_ms, prev_hash));
+    let events_id = g.events.clone();
+    let mut tx = g.doc.transaction();
+    let idx = tx.length(&events_id);
+    let obj = tx.insert_object(&events_id, idx, ObjType::Map).unwrap();
+    tx.put(&obj, "hash", ev.hash.clone()).unwrap();
+    tx.put(&obj, "prev_hash", ev.prev_hash.clone()).unwrap();
+    tx.put(&obj, "ts", ev.ts.clone()).unwrap();
+    tx.put(&obj, "epoch_ms", ev.epoch_ms).unwrap();
+    tx.put(&obj, "pid", ev.pid as i64).unwrap();
+    tx.put(&obj, "tid", ev.tid as i64).unwrap();
+    tx.put(&obj, "uid", ev.uid as i64).unwrap();
+    tx.put(&obj, "comm", ev.comm.clone()).unwrap();
+    tx.put(&obj, "pkg", ev.pkg.clone()).unwrap();
+    tx.put(&obj, "op", ev.op.clone()).unwrap();
+    tx.put(&obj, "ret", ev.ret).unwrap();
+    tx.put(&obj, "flags", ev.flags as i64).unwrap();
+    tx.put(&obj, "file", ev.file.clone()).unwrap();
+    tx.put(&obj, "cmd", ev.cmd.clone()).unwrap();
+    tx.put(&obj, "old_file", ev.old_file.clone()).unwrap();
+    tx.put(&obj, "dev", ev.dev as i64).unwrap();
+    tx.put(&obj, "ino", ev.ino as i64).unwrap();
+    tx.put(&obj, "file_id", fid as i64).unwrap();
+    tx.put(&obj, "seq", tx.length(&events_id) as i64).unwrap();
+    if tx.length(&events_id) > 10000 {
+        let _ = tx.delete(&events_id, 0);
     }
+    tx.commit();
+    let bytes = g.doc.save();
+    let path = g.path.clone();
+    drop(g);
+    let _ = std::fs::write(path, bytes);
 }
 
-pub fn query(after: u64, limit: usize) -> Vec<Ev> {
-    GLOBAL
-        .get()
-        .map(|s| s.0.lock().query(after, limit))
-        .unwrap_or_default()
+pub fn query(_after: u64, limit: usize) -> Vec<Ev> {
+    let Some(s) = GLOBAL.get() else { return Vec::new() };
+    let g = s.0.lock();
+    let len = g.doc.length(&g.events);
+    let start = len.saturating_sub(limit);
+    let mut out = Vec::new();
+    for i in start..len {
+        if let Ok(Some((v, obj))) = g.doc.get(&g.events, i) {
+            if !v.is_object() { continue; }
+            let get_str = |k: &str| g.doc.get(&obj, k).ok().flatten().and_then(|(vv, _)| vv.to_str().map(|s| s.to_string())).unwrap_or_default();
+            let get_i64 = |k: &str| g.doc.get(&obj, k).ok().flatten().and_then(|(vv, _)| vv.to_i64()).unwrap_or(0);
+            out.push(Ev {
+                hash: get_str("hash"), prev_hash: get_str("prev_hash"), ts: get_str("ts"), epoch_ms: get_i64("epoch_ms"),
+                pid: get_i64("pid") as u32, tid: get_i64("tid") as u32, uid: get_i64("uid") as u32,
+                comm: get_str("comm"), pkg: get_str("pkg"), op: get_str("op"), ret: get_i64("ret"),
+                flags: get_i64("flags") as u32, file: get_str("file"), cmd: get_str("cmd"), old_file: get_str("old_file"),
+                dev: get_i64("dev") as u64, ino: get_i64("ino") as u64, file_id: get_i64("file_id") as u64,
+                seq: get_i64("seq") as u64,
+            });
+        }
+    }
+    out
 }
 
-pub fn newest_seq() -> u64 {
-    GLOBAL.get().map(|s| s.0.lock().last_seq).unwrap_or(0)
-}
-
-pub fn file_len() -> u64 {
-    GLOBAL
-        .get()
-        .map(|s| {
-            let g = s.0.lock();
-            std::fs::metadata(&g.path).map(|m| m.len()).unwrap_or(0)
-        })
-        .unwrap_or(0)
-}
-
+pub fn newest_seq() -> u64 { 0 }
+pub fn file_len() -> u64 { GLOBAL.get().and_then(|s| std::fs::metadata(&s.0.lock().path).ok().map(|m| m.len())).unwrap_or(0) }
 pub fn clear() {
-    if let Some(store) = GLOBAL.get() {
-        store.0.lock().clear();
-    }
+    let Some(s) = GLOBAL.get() else { return };
+    let mut g = s.0.lock();
+    let mut doc = Automerge::new();
+    let events = { let mut tx = doc.transaction(); let id = tx.put_object(ROOT, "events", ObjType::List).unwrap(); tx.commit(); id };
+    g.doc = doc;
+    g.events = events;
+    let bytes = g.doc.save();
+    let path = g.path.clone();
+    drop(g);
+    let _ = std::fs::write(path, bytes);
 }
-
-impl Inner {
-    fn push(&mut self, ev: &mut Ev) {
-        self.last_seq += 1;
-        ev.seq = self.last_seq;
-        if let Some(f) = self.file.as_mut() {
-            let _ = f.write_all(ev.to_json().as_bytes());
-            let _ = f.write_all(b"\n");
-            let _ = f.flush();
-        }
-        self.ring.push_back(ev.clone());
-        while self.ring.len() > RING_CAP {
-            self.ring.pop_front();
-        }
-        self.pushes_since_rotate += 1;
-        if self.pushes_since_rotate >= 64 {
-            self.pushes_since_rotate = 0;
-            self.rotate_if_needed();
-        }
-    }
-
-    fn query(&mut self, after: u64, limit: usize) -> Vec<Ev> {
-        let covered = self
-            .ring
-            .front()
-            .map(|e| e.seq <= after + 1)
-            .unwrap_or(false);
-        let mut out: Vec<Ev> = if covered {
-            self.ring
-                .iter()
-                .filter(|e| e.seq > after)
-                .cloned()
-                .collect()
-        } else {
-            read_tail(&self.path, KEEP_TAIL)
-                .map(|c| {
-                    c.lines()
-                        .filter_map(|l| serde_json::from_str::<Ev>(l).ok())
-                        .filter(|e| e.seq > after)
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        if out.len() > limit {
-            let start = out.len() - limit;
-            out = out.split_off(start);
-        }
-        out
-    }
-
-    fn clear(&mut self) {
-        self.ring.clear();
-        if let Ok(f) = OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(&self.path)
-        {
-            self.file = Some(f);
-        }
-    }
-
-    fn rotate_if_needed(&mut self) {
-        let Ok(meta) = std::fs::metadata(&self.path) else {
-            return;
-        };
-        if meta.len() < FILE_CAP {
-            return;
-        }
-        let Ok(tail) = read_tail(&self.path, KEEP_TAIL) else {
-            return;
-        };
-        let start = tail.find('\n').map(|i| i + 1).unwrap_or(tail.len());
-        if std::fs::write(&self.path, &tail[start..]).is_ok() {
-            self.file = OpenOptions::new().append(true).open(&self.path).ok();
-        }
-    }
-}
-
-fn read_tail(path: &Path, n: u64) -> std::io::Result<String> {
-    let mut f = File::open(path)?;
-    let len = f.metadata()?.len();
-    if len > n {
-        f.seek(SeekFrom::End(-(n as i64)))?;
-    }
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf)?;
-    Ok(String::from_utf8_lossy(&buf).into_owned())
-}
-
-fn scan_last_seq(path: &Path) -> u64 {
-    read_tail(path, 4096)
-        .map(|t| {
-            t.lines()
-                .rev()
-                .find_map(|l| serde_json::from_str::<Ev>(l).ok().map(|e| e.seq))
-                .unwrap_or(0)
-        })
-        .unwrap_or(0)
+pub fn save_bytes() -> Vec<u8> { GLOBAL.get().map(|s| s.0.lock().doc.save()).unwrap_or_default() }
+pub fn load_bytes(b: &[u8]) {
+    let Some(s) = GLOBAL.get() else { return };
+    let mut g = s.0.lock();
+    if let Ok(mut other) = Automerge::load(b) { let _ = g.doc.merge(&mut other); let bytes = g.doc.save(); let path = g.path.clone(); drop(g); let _ = std::fs::write(path, bytes); }
 }

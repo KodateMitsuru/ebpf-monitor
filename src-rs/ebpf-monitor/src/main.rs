@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 mod bpf_loader;
+mod catalog;
 mod btf;
 mod cli;
 mod config;
@@ -9,7 +10,6 @@ mod ipc;
 mod log;
 
 use std::collections::HashMap;
-use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,7 +20,7 @@ use aya::{Btf, EbpfLoader};
 use config::Config;
 
 use bpf_loader::Maps;
-use cli::{Action, CtlCall};
+
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
@@ -33,18 +33,14 @@ extern "C" fn handle_sigint(_: libc::c_int) {
 const BPF_OBJ: &[u8] = aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/ebpf-monitor"));
 
 fn main() -> anyhow::Result<()> {
-    match cli::parse() {
-        Action::Ctl(call) => std::process::exit(ctl_main(call)),
-        Action::Serve(args) => {
-            if args.selftest {
-                return selftest();
-            }
-            if args.loadtest {
-                return loadtest();
-            }
-            serve(args)
-        }
+    let args = cli::parse();
+    if args.selftest {
+        return selftest();
     }
+    if args.loadtest {
+        return loadtest();
+    }
+    serve(args)
 }
 
 fn selftest() -> anyhow::Result<()> {
@@ -69,7 +65,7 @@ fn selftest() -> anyhow::Result<()> {
     let cfg = dir.join("config.toml");
     std::fs::write(&cfg, "version = 1\n")?;
     let (tx, _rx) = std::sync::mpsc::sync_channel(1);
-    let ipc = ipc::Ipc::new(dir.clone(), cfg.clone(), tx);
+    let ipc = ipc::Ipc::new(dir.clone(), tx);
     let listener = ipc.bind()?;
     let handle = std::thread::spawn(move || ipc.serve(listener));
 
@@ -126,54 +122,6 @@ fn parse_elf_section_names(obj: &[u8]) -> anyhow::Result<Vec<String>> {
     Ok(out)
 }
 
-fn ctl_main(call: CtlCall) -> i32 {
-    let persist = resolve_persist_dir(None);
-    let socket = persist.join("ctl.sock");
-
-    let req_line;
-    let mut body: Option<Vec<u8>> = None;
-
-    match call.method.as_str() {
-        "events" => {
-            req_line = format!(
-                "{{\"cmd\":\"events\",\"after\":{},\"limit\":{}}}\n",
-                call.after, call.limit
-            );
-        }
-        "config-set" | "set-config" => {
-            let src = call.body_file.unwrap_or_else(|| "-".into());
-            let content = if src == "-" {
-                let mut buf = Vec::new();
-                if std::io::stdin().read_to_end(&mut buf).is_err() || buf.is_empty() {
-                    println!("{{\"ok\":false,\"error\":\"empty stdin\"}}");
-                    return 1;
-                }
-                buf
-            } else {
-                match std::fs::read(&src) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        println!("{{\"ok\":false,\"error\":\"read {src}: {e}\"}}");
-                        return 1;
-                    }
-                }
-            };
-            req_line = format!("{{\"cmd\":\"{}\"}}\n", call.method);
-            body = Some(content);
-        }
-        other => {
-            req_line = format!("{{\"cmd\":\"{other}\"}}\n");
-        }
-    }
-
-    let raw_field = if call.method == "config-get" {
-        Some("content")
-    } else {
-        None
-    };
-    ipc::client_main(&socket, &req_line, body.as_deref(), raw_field)
-}
-
 fn resolve_persist_dir(config_path: Option<&Path>) -> PathBuf {
     if let Ok(dir) = std::env::var("EBPF_MONITOR_DIR") {
         let p = PathBuf::from(dir);
@@ -197,7 +145,6 @@ fn load_bpf() -> anyhow::Result<(aya::Ebpf, Maps)> {
     let mut bpf = EbpfLoader::new().btf(Some(&btf)).load(BPF_OBJ)?;
     let mut maps = Maps::take(&mut bpf).map_err(|e| anyhow::anyhow!(e))?;
     // KMI 6.1 aarch64: task_struct.thread_info.flags at 0, TIF_32BIT=22 – static is correct.
-    // btf.rs uses aya::Btf (not libbpf) to validate BTF exists, avoiding hand-rolled parser.
     bpf_loader::apply_kernel_layout(&mut maps, btf::KernelLayout::ARM64_STATIC).map_err(|e| anyhow::anyhow!(e))?;
 
     for (prog_name, tp_name) in [("on_enter", "sys_enter"), ("on_exit", "sys_exit")] {
@@ -250,18 +197,14 @@ fn serve(args: cli::CliArgs) -> anyhow::Result<()> {
 
     log::init(args.verbosity);
 
-    let config_path = args
-        .config_path
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("config.toml"));
-    let persist = resolve_persist_dir(Some(&config_path));
+    let persist = resolve_persist_dir(None);
     events::init(&persist);
 
     let (_bpf, mut maps) = load_bpf()?;
 
-    let config = Config::load(&config_path)?;
+    let config = Config::load();
     let mut nr_names: HashMap<u32, String> = HashMap::new();
-    for s in &config.syscall {
+    for s in catalog::syscalls() {
         if let Some(nr) = s.nr.arm64 {
             nr_names.insert(nr, s.name.clone());
         }
@@ -277,7 +220,7 @@ fn serve(args: cli::CliArgs) -> anyhow::Result<()> {
     bpf_loader::load_whitelist(&mut maps, &config).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let (tx, rx) = std::sync::mpsc::sync_channel::<ipc::Req>(4);
-    let ipc_srv = ipc::Ipc::new(persist.clone(), config_path.clone(), tx);
+    let ipc_srv = ipc::Ipc::new(persist.clone(), tx);
     match ipc_srv.bind() {
         Ok(listener) => ipc_srv.serve(listener),
         Err(e) => {
@@ -317,14 +260,11 @@ fn serve(args: cli::CliArgs) -> anyhow::Result<()> {
             event_handler::handle(&item, &nr_names, &uid_names);
         }
 
-        let mut apply = |toml_text: &str| -> Result<(), String> {
-            let new_cfg = Config::from_toml_str(toml_text).map_err(|e| format!("toml: {e}"))?;
+        let mut apply = || -> Result<(), String> {
+            let new_cfg = Config::load();
             new_cfg.validate().map_err(|e| format!("validate: {e}"))?;
-            let tmp = config_path.with_extension("toml.tmp");
-            std::fs::write(&tmp, toml_text).map_err(|e| format!("write: {e}"))?;
-            std::fs::rename(&tmp, &config_path).map_err(|e| format!("rename: {e}"))?;
             bpf_loader::reload(&mut maps, &new_cfg)?;
-            log::info!("config reloaded via ctl");
+            log::info!("config reloaded via KSU");
             Ok(())
         };
         ipc::drain_reload(&rx, &mut apply);

@@ -1,7 +1,4 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Full pipeline: daemon (build.rs compiles the eBPF object through aya-build)
-// -> frontend (vite, into dist/webroot) -> module zip with the version from
-// package.json injected into module.prop.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createWriteStream, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -17,6 +14,7 @@ node('daemon.mjs');
 console.log('==> frontend: pnpm run build:web (typecheck + vite -> dist/webroot)');
 execFileSync('pnpm', ['run', 'build:web'], { cwd: root, stdio: 'inherit' });
 const bin = join(rs, 'target/aarch64-linux-android/release/ebpf-monitor');
+const ctlBin = join(rs, 'target/aarch64-linux-android/release/ebpf-monitor-ctl');
 const tpl = join(root, 'template');
 const webroot = join(root, 'dist/webroot');
 if (!existsSync(join(webroot, 'index.html'))) {
@@ -35,12 +33,13 @@ const DATA = 0o644, EXEC = 0o755;
 const z = new yazl.ZipFile();
 z.addBuffer(Buffer.from(rendered, 'utf8'), 'module.prop', { mode: DATA });
 for (const [name, mode] of [
-  ['config.toml', DATA], ['sepolicy.rule', DATA],
+  ['sepolicy.rule', DATA],
   ['customize.sh', EXEC], ['service.sh', EXEC], ['uninstall.sh', EXEC], ['action.sh', EXEC],
 ]) {
   z.addFile(join(tpl, name), name, { mode });
 }
 z.addFile(bin, 'ebpf-monitor', { mode: EXEC });
+if (existsSync(ctlBin)) z.addFile(ctlBin, 'ebpf-monitor-ctl', { mode: EXEC });
 
 (function walk(dir, prefix) {
   z.addEmptyDirectory(prefix, { mode: EXEC });

@@ -6,12 +6,12 @@ import { previewMode } from '@/lib/ksu'
 export const labelStore = reactive(new Map<string, string>())
 const requested = new Set<string>()
 
-export function appLabel(pkg: string): string {
+export function resolveAppLabel(pkg: string): string {
   if (!pkg || pkg === '-') return ''
   return labelStore.get(pkg) || pkg
 }
 
-export function loadLabels(pkgs: string[]): void {
+export function preloadLabels(pkgs: string[]): void {
   if (previewMode) return
   const fresh = [...new Set(pkgs)].filter(p => p && p !== '-' && !requested.has(p))
   if (fresh.length === 0) return
@@ -25,15 +25,15 @@ export function loadLabels(pkgs: string[]): void {
   }
 }
 
-function hue(pkg: string): number {
+function hashHue(pkg: string): number {
   let h = 0
   for (let i = 0; i < pkg.length; i++) h = (h * 31 + pkg.charCodeAt(i)) % 360
   return h
 }
 
-export function avatarFor(pkg: string): string {
+export function avatarUrl(pkg: string): string {
   const ch = (pkg && pkg[0] ? pkg[0] : '?').toUpperCase()
-  const h = hue(pkg || '?')
+  const h = hashHue(pkg || '?')
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48">` +
     `<rect width="48" height="48" rx="10" fill="hsl(${h},62%,58%)"/>` +
@@ -42,7 +42,8 @@ export function avatarFor(pkg: string): string {
   return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg)
 }
 
-export function displayName(e: { pkg: string; comm: string }): string {
-  if (e.pkg && e.pkg !== '-') return appLabel(e.pkg)
+export function resolveDisplayName(e: { pkg: string; comm: string }): string {
+  if (e.pkg && e.pkg !== '-') return resolveAppLabel(e.pkg)
   return e.comm || '?'
 }
+

@@ -27,9 +27,11 @@ thiserror = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+rusqlite = { workspace = true }
 chrono = { workspace = true }
+automerge = { workspace = true }
+blake3 = { workspace = true }
 plain = { workspace = true }
-
 [build-dependencies]
 anyhow = { workspace = true }
 aya-build = { workspace = true }

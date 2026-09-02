@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// @ts-ignore
+import * as Automerge from '@automerge/automerge'
 import { exec, moduleInfo, toast as ksuToast } from 'kernelsu'
-
 export const previewMode: boolean = typeof window.ksu === 'undefined'
 
-function safeModuleId(): string {
+function resolveModuleId(): string {
   try {
     const info = JSON.parse(moduleInfo()) as { id?: string }
     return info.id || 'ebpf-monitor'
@@ -12,9 +13,11 @@ function safeModuleId(): string {
   }
 }
 
-export const MODDIR = `/data/adb/modules/${previewMode ? 'ebpf-monitor' : safeModuleId()}`
+export const MODDIR = `/data/adb/modules/${previewMode ? 'ebpf-monitor' : resolveModuleId()}`
 export const BIN = `${MODDIR}/ebpf-monitor`
+export const BIN_CTL = `${MODDIR}/ebpf-monitor-ctl`
 export const PERSIST = '/data/adb/ebpf-monitor'
+export const CTL_SOCK = `${PERSIST}/ctl.sock`
 
 export interface Status {
   running: boolean
@@ -38,6 +41,7 @@ export interface EventRow {
   flags: number
   file: string
   cmd: string
+  old_file?: string
 }
 
 interface CtlResp {
@@ -53,29 +57,20 @@ interface CtlResp {
 
 export interface ConfigJson {
   whitelist: { uid: number[]; pid: number[] }
-  syscall: unknown[]
-  syscall_groups: Array<{
-    name: string
-    syscalls: string[]
-    watch_param?: string
-    watch_flag_param?: string
-    watch_flag_mask?: number
-  }>
-  print: { groups: string[] } | null
   watch: { basenames: string[]; groups: string[] } | null
+  print: { groups: string[] } | null
 }
 
-async function run(cmd: string): Promise<string> {
+async function execute(cmd: string): Promise<string> {
   const { errno, stdout, stderr } = await exec(cmd, {})
   if (errno !== 0) throw new Error(stderr || stdout || `errno=${errno}`)
   return stdout
 }
 
-async function ctlJson(args: string): Promise<CtlResp> {
-  const out = (await run(`${BIN} ${args}`)).trim()
-  const parsed: unknown = JSON.parse(out.split('\n').pop() || '{}')
-  if (typeof parsed !== 'object' || parsed === null) throw new Error('bad ctl response')
-  const j = parsed as CtlResp
+async function invokeCtl(args: string): Promise<CtlResp> {
+  const out = (await execute(`${BIN_CTL} ${args}`)).trim()
+  const j = JSON.parse(out.split('\n').pop() || '{}') as CtlResp
+  if (typeof j !== 'object' || j === null) throw new Error('bad ctl response')
   if (j.ok !== true) throw new Error(j.error || 'ctl failed')
   return j
 }
@@ -92,14 +87,32 @@ const MOCK_EVENTS: EventRow[] = [
 ]
 const MOCK_CONFIG: ConfigJson = {
   whitelist: { uid: [1000], pid: [] },
-  syscall: [],
-  syscall_groups: [],
+  watch: { basenames: ['test.jpg', '123456789'], groups: ['create', 'create_any', 'rename_', 'delete'] },
   print: null,
-  watch: { basenames: ['test.jpg', '123456789'], groups: ['create', 'create_any', 'rename_', 'delete'] }
 }
-const cloneCfg = (c: ConfigJson): ConfigJson => JSON.parse(JSON.stringify(c))
+const cloneConfig = (c: ConfigJson): ConfigJson => JSON.parse(JSON.stringify(c))
 
-export function classify(e: EventRow): { c: string; txt: string } {
+type ForestDoc = Automerge.Doc<{ forest: Record<string, EventRow[]> }>
+async function loadForest(): Promise<ForestDoc | null> {
+  try { const b64 = localStorage.getItem('forest'); if (!b64) return null; const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0)); return Automerge.load(bytes) } catch { return null }
+}
+async function saveForest(doc: ForestDoc): Promise<void> {
+  try { const bytes = Automerge.save(doc); localStorage.setItem('forest', btoa(String.fromCharCode(...bytes))) } catch {}
+}
+function collectForest(doc: ForestDoc): EventRow[] {
+  const out: EventRow[] = []
+  if (typeof doc === 'object' && doc !== null && 'forest' in doc) {
+    const forest = (doc as { forest: unknown }).forest
+    if (forest && typeof forest === 'object') {
+      for (const k of Object.keys(forest as Record<string, unknown>)) {
+        const arr = (forest as Record<string, unknown>)[k]
+        if (Array.isArray(arr)) for (const e of arr as EventRow[]) out.push(e)
+      }
+    }
+  }
+  return out.sort((a,b)=> a.epoch_ms - b.epoch_ms)
+}
+export function classifyEvent(e: EventRow): { c: string; txt: string } {
   if (e.ret < 0) return { c: 'fail', txt: '失败' }
   switch (e.op) {
     case 'openat': case 'openat2': case 'creat':
@@ -112,59 +125,98 @@ export function classify(e: EventRow): { c: string; txt: string } {
 }
 
 export const api = {
-  async status(): Promise<Status> {
+  async fetchStatus(): Promise<Status> {
     if (previewMode) return { running: true, kernel: '5.15.94-android13-8', btf: true, eventsBytes: 8123, newest: 8 }
     try {
-      const j = await ctlJson('ctl status')
+      const j = await invokeCtl('status')
       return { running: true, kernel: j.kernel || '', btf: !!j.btf, eventsBytes: j.events_bytes || 0, newest: j.newest || 0 }
     } catch {
       return { running: false, kernel: '', btf: false, eventsBytes: 0, newest: 0 }
     }
   },
 
-  async events(after = 0): Promise<EventRow[]> {
+  async fetchEvents(after = 0): Promise<EventRow[]> {
     if (previewMode) return MOCK_EVENTS.filter(e => e.seq > after)
-    const j = await ctlJson(`ctl events after=${after} limit=300`)
+    const j = await invokeCtl(`events after ${after} limit 300`)
     return j.events || []
   },
 
-  async clear(): Promise<void> {
+  async syncEvents(after = 0): Promise<{ events: EventRow[]; truncated: boolean; oldest: number; newest: number }> {
+    if (previewMode) return { events: MOCK_EVENTS.filter(e => e.seq > after), truncated: false, oldest: 1, newest: 8 }
+    const local = await loadForest()
+    const docBytes = local ? Automerge.save(local) : null
+    const b64 = docBytes ? btoa(String.fromCharCode(...docBytes)) : ''
+    const { promise, resolve, reject } = Promise.withResolvers<string>()
+    const cmd = b64 ? `echo '${b64.replace(/'/g, "'\\''")}' | ${BIN_CTL} sync` : `${BIN_CTL} sync`
+    execute(cmd).then(resolve).catch(reject)
+    const out = await promise
+    try {
+      const raw: unknown = JSON.parse(out)
+      if (raw && typeof raw === 'object' && 'doc' in raw) {
+        const docField = (raw as { doc: unknown }).doc
+        if (typeof docField === 'string' && docField) {
+          const bytes = Uint8Array.from(atob(docField), c => c.charCodeAt(0))
+          const remote = Automerge.load<ForestDoc>(bytes)
+          if (local) { const merged = Automerge.merge(local, remote) as ForestDoc; await saveForest(merged); return { events: collectForest(merged), truncated: false, oldest: 0, newest: 0 } }
+          const toSave = remote as ForestDoc; await saveForest(toSave); return { events: collectForest(toSave), truncated: false, oldest: 0, newest: 0 }
+        }
+      }
+    } catch {}
+    return { events: [], truncated: false, oldest: 0, newest: 0 }
+  },
+  async clearEvents(): Promise<void> {
     if (previewMode) return
-    await ctlJson('ctl clear')
+    await invokeCtl('clear')
   },
-
-  async getConfig(): Promise<ConfigJson> {
-    if (previewMode) return cloneCfg(MOCK_CONFIG)
-    const j = await ctlJson('ctl get-config')
-    if (!j.config) throw new Error('get-config 无返回')
-    return j.config
-  },
-
-  async setConfig(cfg: ConfigJson): Promise<void> {
-    if (previewMode) {
-      Object.assign(MOCK_CONFIG, cloneCfg(cfg))
-      return
+  async fetchConfig(): Promise<ConfigJson> {
+    const fetchValue = async (k: string, temp = false): Promise<string> => {
+      const flag = temp ? '--temp ' : ''
+      try { const out = await execute(`ksud module config get ${flag}${k} 2>/dev/null || true`); return out.trim() } catch { return '' }
     }
-    // transport through sh via base64: JSON body must survive any quoting;
-    // unescape(encodeURIComponent(...)) makes btoa accept UTF-8
-    const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(cfg))))
-    const pending = `${PERSIST}/pending.json`
-    await run(`printf %s '${b64}' | base64 -d > ${pending} && ${BIN} ctl set-config ${pending} && rm -f ${pending}`)
+    const [bases, groups, uidStr, pidStr, printStr] = await Promise.all([
+      fetchValue('watch.basenames'),
+      fetchValue('watch.groups'),
+      fetchValue('whitelist.uid'),
+      fetchValue('whitelist.pid', true),
+      fetchValue('print.groups')
+    ])
+    const cfg = cloneConfig(MOCK_CONFIG)
+    try { const a = JSON.parse(bases); if (Array.isArray(a)) cfg.watch!.basenames = a } catch {}
+    try { const a = JSON.parse(groups); if (Array.isArray(a)) cfg.watch!.groups = a } catch {}
+    try { const a = JSON.parse(uidStr); if (Array.isArray(a)) cfg.whitelist.uid = a } catch {}
+    try { const a = JSON.parse(pidStr); if (Array.isArray(a)) cfg.whitelist.pid = a } catch {}
+    try { const a = JSON.parse(printStr); if (Array.isArray(a)) cfg.print = a.length ? { groups: a } : null } catch {}
+    return cfg
   },
 
-  async targets(): Promise<string[]> {
-    return (await this.getConfig()).watch?.basenames ?? []
+  async saveConfig(cfg: ConfigJson): Promise<void> {
+    if (previewMode) { Object.assign(MOCK_CONFIG, cloneConfig(cfg)); return }
+    const persistValue = async (k: string, v: string, temp = false) => {
+      const esc = v.replace(/'/g, `'\\''`)
+      const flag = temp ? '--temp ' : ''
+      await execute(`ksud module config set ${flag}${k} '${esc}'`)
+    }
+    await persistValue('watch.basenames', JSON.stringify(cfg.watch?.basenames ?? []))
+    await persistValue('watch.groups', JSON.stringify(cfg.watch?.groups ?? []))
+    await persistValue('whitelist.uid', JSON.stringify(cfg.whitelist.uid ?? []))
+    await persistValue('whitelist.pid', JSON.stringify(cfg.whitelist.pid ?? []), true)
+    await persistValue('print.groups', JSON.stringify(cfg.print?.groups ?? []))
+    try { await execute(`${BIN_CTL} reload`) } catch {}
   },
 
-  async setTargets(list: string[]): Promise<void> {
-    const cfg = await this.getConfig()
+  async fetchTargets(): Promise<string[]> {
+    return (await this.fetchConfig()).watch?.basenames ?? []
+  },
+
+  async saveTargets(list: string[]): Promise<void> {
+    const cfg = await this.fetchConfig()
     cfg.watch = cfg.watch ?? { basenames: [], groups: [] }
     cfg.watch.basenames = list
-    await this.setConfig(cfg)
-  }
+    await this.saveConfig(cfg)
+  },
 }
 
-export function toast(msg: string): void {
+export function notify(msg: string): void {
   if (!previewMode && ksuToast) {
     try {
       ksuToast(msg)
@@ -173,3 +225,4 @@ export function toast(msg: string): void {
   }
   console.log('[toast]', msg)
 }
+

@@ -25,6 +25,7 @@ fi
 
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 set_perm "$MODPATH/ebpf-monitor" 0 0 0755
+if [ -f "$MODPATH/ebpf-monitor-ctl" ]; then set_perm "$MODPATH/ebpf-monitor-ctl" 0 0 0755; fi
 for f in customize.sh service.sh uninstall.sh action.sh; do
     set_perm "$MODPATH/$f" 0 0 0755
 done
@@ -37,5 +38,8 @@ if ! out=$("$MODPATH/ebpf-monitor" --loadtest 2>&1); then
 fi
 ui_print "- $out"
 
-ui_print "- Config & events: /data/adb/ebpf-monitor (survives module updates)"
+ui_print "- Config: ksud module config (persist, per https://kernelsu.org/zh_CN/guide/module-config.html)"
+ui_print "- Events: daemon SQLite /data/adb/ebpf-monitor/events.db; frontend OPFS via ctl.sock get-db (binary, spawn chunked)"
+ui_print "- Control: ebpf-monitor (daemon, always-on) + ebpf-monitor-ctl (spawn, per-invocation, no open listener)"
+ui_print "- Events: /data/adb/ebpf-monitor/events.db (sqlite, survives updates)"
 ui_print "- Reboot to start the daemon; logs: adb logcat -s ebpf-monitor"

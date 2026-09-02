@@ -3,12 +3,12 @@
 import { computed, ref } from 'vue'
 import { MiuixCard, MiuixBasicComponent, MiuixText, MiuixIcon } from 'miuix-vue'
 import { Ok, Close } from 'miuix-vue/icons'
-import { classify, type EventRow } from '@/lib/ksu'
-import { avatarFor, displayName } from '@/lib/labels'
+import { classifyEvent, type EventRow } from '@/lib/ksu'
+import { avatarUrl, resolveDisplayName } from '@/lib/labels'
 
 const props = defineProps<{ ev: EventRow }>()
 
-const cls = computed(() => classify(props.ev))
+const cls = computed(() => classifyEvent(props.ev))
 const isApp = computed(() => props.ev.pkg !== '-' && props.ev.pkg !== '')
 
 const OP_COLOR: Record<string, string> = {
@@ -24,13 +24,13 @@ const retColor = computed(() => props.ev.ret < 0 ? 'var(--m-color-error)' : 'var
 
 const iconUrl = computed(() => (isApp.value ? `ksu://icon/${props.ev.pkg}` : null))
 const iconFailed = ref(false)
-const iconSrc = computed(() => iconUrl.value && !iconFailed.value ? iconUrl.value! : avatarFor(props.ev.pkg || props.ev.comm))
+const iconSrc = computed(() => iconUrl.value && !iconFailed.value ? iconUrl.value! : avatarUrl(props.ev.pkg || props.ev.comm))
 </script>
 
 <template>
   <MiuixCard class="ev-card" press-feedback="none">
     <MiuixBasicComponent
-      :title="displayName(ev) + ' · ' + cls.txt"
+      :title="resolveDisplayName(ev) + ' · ' + cls.txt"
       :title-color="opColor"
       :summary="ev.ts + ' · pid ' + ev.pid + ' · uid ' + ev.uid">
       <template #start>

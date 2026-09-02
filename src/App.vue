@@ -8,15 +8,15 @@ import {
 import { ListView, Settings } from 'miuix-vue/icons'
 import EventsPage from '@/pages/EventsPage.vue'
 import SettingsPage from '@/pages/SettingsPage.vue'
-import { refresh, startLoop } from '@/lib/store'
+import { synchronize, startPolling } from '@/lib/store'
 import { previewMode } from '@/lib/ksu'
 
 const { setThemeMode } = useTheme()
 setThemeMode('system')
 
 onMounted(() => {
-  refresh()
-  startLoop()
+  synchronize()
+  startPolling()
 })
 
 const titles = ['事件', '设置']

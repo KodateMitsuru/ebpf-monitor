@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "ebpf-monitor",
+    "ebpf-monitor-ctl",
     "ebpf-monitor-common",
     "ebpf-monitor-ebpf",
 ]
@@ -33,7 +34,10 @@ thiserror = { version = "2", default-features = false }
 parking_lot = { version = "0.12", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
+rusqlite = { version = "0.31", default-features = false, features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+automerge = { version = "0.7", default-features = false, features = ["utf8-indexing"] }
+blake3 = "1.5"
 
 [profile.release.package.ebpf-monitor-ebpf]
 debug = 2
